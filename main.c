@@ -3,6 +3,7 @@
 #include <pthread.h> 
 #include <errno.h>
 #include <stdlib.h>
+#include <sys/types.h>
 
 //Shared variables required to control the producer/consumer threads
 int current_product_id = 0;
@@ -29,6 +30,14 @@ struct Product{
 	int life;
 	
 };
+
+void print_product(struct Product p){
+	
+	printf("The product id is %d\n", p.product_id);
+	printf("The product birthday is %lu\n", p.birthday.tv_usec);
+	printf("The product life is %d\n\n", p.life);
+	
+}
 
 //Variables for representing the queue
 struct Product_queue{
@@ -119,27 +128,84 @@ struct Product queue_remove(struct Product_queue *q){
 }
 
 //The producer function, which will be executed by a pthread
-void* producer(struct Product_queue *q_ptr){
+void* producer(void *q_ptr){
 	
-	usleep(100000);//Sleep for 100 miliseconds
+	struct Product_queue *q = (struct Product_queue *)q_ptr;
+	
+	while(TOTAL_NUMBER_OF_PRODUCTS > total_number_produced){
+		
+		pthread_mutex_lock(q->q_mutex);//locks the mutex
+		
+		if(TOTAL_NUMBER_OF_PRODUCTS <= total_number_produced){
+			pthread_mutex_unlock(q->q_mutex);
+			return(NULL);
+		}
+		
+		//waits for the queue not to be full
+		while(q->is_full == 1){
+			pthread_cond_wait(q->is_not_full, q->q_mutex);
+		}
+		
+		//Creates a new product
+		struct Product p;
+		p.product_id = total_number_produced;
+		gettimeofday(&p.birthday, NULL);
+		p.life = rand() % 1024;
+		
+		//Adds the product
+		queue_add(q, p);
+		total_number_produced += 1;
+		
+		printf("Producer %p has made a product\n", pthread_self());
+		print_product(p);
+		
+		//Unlocks the mutex, signals the queue is not empty
+		pthread_mutex_unlock(q->q_mutex);
+		pthread_cond_signal(q->is_not_empty);
+		usleep(100000);//Sleep for 100 miliseconds
+		
+	}
+	
+	return (NULL);
 	
 }
 
 //The consumer function, which will be executed by a pthread
-void* consumer(struct Product_queue *q_ptr){
+void* consumer(void *q_ptr){
 	
-	usleep(100000);//Sleep for 100 miliseconds
+	struct Product_queue *q = (struct Product_queue *)q_ptr;
+	
+	while(TOTAL_NUMBER_OF_PRODUCTS > total_number_consumed){
+		
+		pthread_mutex_lock(q->q_mutex);//locks the mutex
+		
+		if(TOTAL_NUMBER_OF_PRODUCTS <= total_number_consumed){
+			pthread_mutex_unlock(q->q_mutex);
+			return(NULL);
+		}
+		
+		//Waits for the queue not to be empty
+		while(q->is_empty == 1){
+			pthread_cond_wait(q->is_not_empty, q->q_mutex);
+		}
+		
+		struct Product p = queue_remove(q);
+		total_number_consumed += 1;
+		printf("Consumer %p has consumed a product\n", pthread_self());
+		print_product(p);
+		
+		pthread_mutex_unlock(q->q_mutex);
+		pthread_cond_signal(q->is_not_full); \
+		
+		usleep(100000);//Sleep for 100 miliseconds
+	}
+	
+	return (NULL);
 	
 }
 
 //Prints a product
-void print_product(struct Product p){
-	
-	printf("The product id is %d\n", p.product_id);
-	printf("The product birthday is %lu\n", p.birthday.tv_usec);
-	printf("The product life is %d\n\n", p.life);
-	
-}
+
 /*Prints all products, used for debugging/*
 void print_all_products(struct Product prods[], int size){
 	
@@ -179,7 +245,7 @@ int main(int argc, char** argv){
 	RNG_SEED = atoi(argv[7]);
 	
 	srand(RNG_SEED); //Seeds the random number generator with the specified value
-	
+	struct Product_queue *the_queue = init_queue(SIZE_OF_QUEUE);//Initializes the queue
 	/* Code used to test the queue before we stated threading
 	struct Product_queue *the_queue = init_queue(SIZE_OF_QUEUE);
 	for(i = 0; i < 10; ++i){
@@ -201,99 +267,25 @@ int main(int argc, char** argv){
 	}
 	*/
 	
+	pthread_t producers[NUMBER_OF_PRODUCERS];
+	pthread_t consumers[NUMBER_OF_CONSUMERS];
 	
+	for(i = 0; i < NUMBER_OF_PRODUCERS; ++i){
+		pthread_create(&producers[i], NULL, producer, the_queue);
+	}
+	for(i = 0; i < NUMBER_OF_CONSUMERS; ++i){
+		pthread_create(&consumers[i], NULL, consumer, the_queue);
+	}
+	
+	for(i = 0; i < NUMBER_OF_PRODUCERS; ++i){
+		pthread_join(producers[i], NULL);
+	}
+	for(i = 0; i < NUMBER_OF_CONSUMERS; ++i){
+		pthread_join(consumers[i], NULL);
+	}
 	
 	destroy_queue(the_queue);
 	
 	return 0;
 }
 
-
-/*
-#define NUMBER_OF_PHIL 5
-
-pthread_mutex_t fork_mutex[NUMBER_OF_PHIL];
-pthread_cond_t empty = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t not3;
-int MAX = 3;
-int eating = 0;
-int waiting = 0;
-/*
-main()  
-{
-  int i;
-  pthread_t diner_thread[NUMBER_OF_PHIL]; 
-  int dn[NUMBER_OF_PHIL];
-  void *diner();
-  
-
-  pthread_mutex_init(&not3, NULL);
-
-  for (i=0;i<NUMBER_OF_PHIL;i++)
-    pthread_mutex_init(&fork_mutex[i], NULL);
-  
-  for (i=0;i<NUMBER_OF_PHIL;i++){
-    dn[i] = i;
-    pthread_create(&diner_thread[i],NULL,diner,&dn[i]);
-  }
-  for (i=0;i<NUMBER_OF_PHIL;i++)
-    pthread_join(diner_thread[i],NULL);
-  pthread_exit(0);
-
-}
-
-void *diner(int *i)
-{
-  int v;
-  int t = 0;
-  printf("I'm diner %d\n",*i);
-  v = *i;
-  while (t < 5) {
-
- 
-    printf("%d is thinking\n", v);
-    sleep( v/2);
-    printf("%d is hungry\n", v);
-    printf("Eating = %i\n" , eating);
-    printf("Waiting = %i\n" , waiting);
-      
-  
-    
-     pthread_mutex_lock(&not3);    
- 
-    while(eating >= MAX) {
-      printf("max reached\n");
-      printf("Eating = %i\n" , eating);
-      printf("Waiting = %i\n" , waiting);
-      pthread_cond_wait(&empty,&not3);
-    }
- 
-    eating++;
-
-    pthread_mutex_unlock(&not3);
-
-    pthread_mutex_lock(&fork_mutex[v]);
-    pthread_mutex_lock(&fork_mutex[(v+1)%NUMBER_OF_PHIL]);
-    printf("%d is eating\n", v);
-    printf("Eating = %i\n" , eating);
-    printf("Waiting = %i\n" , waiting);
-  
-    if(--eating < MAX)
-      pthread_cond_signal(&empty);
-   
-    t++;
-    sleep(1);
-    
-    printf("%d is done eating\n", v);    
-    printf("Eating = %i\n" , eating);
-    printf("Waiting = %i\n" , waiting);
-      
-    pthread_mutex_unlock(&fork_mutex[v]);
-    pthread_mutex_unlock(&fork_mutex[(v+1)%NUMBER_OF_PHIL]);
- 
-  }
-  printf("\n%d IS LEAVING\n\n", v);
-  pthread_exit(NULL);
-}
- 
-*/
