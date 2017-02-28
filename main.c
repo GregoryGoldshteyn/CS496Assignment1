@@ -1,30 +1,146 @@
-#include <time.h>
+#include <sys/time.h>
 #include <stdio.h>
 #include <pthread.h> 
 #include <errno.h>
+#include <stdlib.h>
+
+//Shared variables required to control the producer/consumer threads
+int current_product_id = 0;
+int total_number_produced = 0;
+int total_number_consumed = 0;
+pthread_mutex_t *producer_consumer_mutex;
+pthread_cond_t *consumer_cond, *producer_cond;
+
+//Shared varibales that are initiated by the program inputs
+int NUMBER_OF_PRODUCERS;
+int NUMBER_OF_CONSUMERS;
+int TOTAL_NUMBER_OF_PRODUCTS;
+int SIZE_OF_QUEUE;
+int SCHEDULE_CHOICE;
+int VALUE_OF_QUANTUM;
+int RNG_SEED;
 
 //A struct for representing products
 //clock_t is used for simplicity
 struct Product{
 	
 	int product_id;
-	clock_t birthday;
+	struct timeval birthday;
 	int life;
 	
 };
 
+//Variables for representing the queue
+struct Product_queue{
+	
+	pthread_mutex_t *q_mutex;
+	pthread_cond_t *is_not_full, *is_not_empty;
+	int buffer_size;
+	int head;
+	int tail;
+	int is_empty;
+	int is_full;
+	struct Product buffer[];
+	
+};
+
+//Function to initialize the queue
+struct Product_queue *init_queue(int size){
+	
+	int i = 0; //Loop variable
+	
+	//Sets up the product buffer
+	struct Product_queue *ret_q = malloc(sizeof *ret_q + size * sizeof ret_q->buffer[0]);
+	
+	//Sets up the mutex and condition variables
+	ret_q->q_mutex = (pthread_mutex_t *) malloc(sizeof (pthread_mutex_t));
+	ret_q->is_not_full = (pthread_cond_t *) malloc(sizeof (pthread_cond_t));
+	ret_q->is_not_empty = (pthread_cond_t *) malloc(sizeof (pthread_cond_t));
+	
+	pthread_mutex_init(ret_q->q_mutex, NULL);
+	pthread_cond_init(ret_q->is_not_full, NULL);
+	pthread_cond_init(ret_q->is_not_empty, NULL);
+	
+	//Sets the integers that the queue uses
+	ret_q->buffer_size = size;
+	ret_q->is_empty = 1;
+	ret_q->is_full = 0;
+	ret_q->head = 0;
+	ret_q->tail = 0;
+	
+	return ret_q;
+	
+}
+
+//Function to delete the queue once the program is finished
+void destroy_queue(struct Product_queue *q){
+	
+	int i = 0;
+	pthread_mutex_destroy(q->q_mutex);
+	pthread_cond_destroy(q->is_not_empty);
+	pthread_cond_destroy(q->is_not_full);
+	free(q->q_mutex);
+	free(q->is_not_empty);
+	free(q->is_not_full);
+	free(q);
+	
+}
+
+//Function to add a product to the queue
+void queue_add(struct Product_queue *q, struct Product in_p){
+	
+	q->buffer[q->tail] = in_p;
+	q->tail += 1;
+	if(q->tail == q->buffer_size){
+		q->tail = 0;
+	}
+	if(q->tail == q->head){
+		q->is_full = 1;
+	}
+	q->is_empty = 0;
+	
+}
+
+//Function to remove a product from the queue
+struct Product queue_remove(struct Product_queue *q){
+	
+	struct Product ret_product = q->buffer[q->head];
+	q->head +=1;
+	if(q->head == q->buffer_size){
+		q->head = 0;
+	}
+	if(q->head == q->tail){
+		q->is_empty = 1;
+	}
+	q->is_full = 0;
+	
+	return ret_product;
+	
+}
+
 //The producer function, which will be executed by a pthread
-void* producer(int *MAX){
+void* producer(struct Product_queue *q_ptr){
+	
+	usleep(100000);//Sleep for 100 miliseconds
 	
 }
 
 //The consumer function, which will be executed by a pthread
-void* consumer(void *ptr){
+void* consumer(struct Product_queue *q_ptr){
 	
-	
+	usleep(100000);//Sleep for 100 miliseconds
 	
 }
-//Prints all products, used for debugging
+
+//Prints a product
+void print_product(struct Product p){
+	
+	printf("The product id is %d\n", p.product_id);
+	printf("The product birthday is %lu\n", p.birthday.tv_usec);
+	printf("The product life is %d\n\n", p.life);
+	
+}
+/*Prints all products, used for debugging/*
 void print_all_products(struct Product prods[], int size){
 	
 	int i = 0;
@@ -35,23 +151,7 @@ void print_all_products(struct Product prods[], int size){
 	}
 	
 }
-
-//Shared variables required to control the producer/consumer threads
-struct Product **the_buffer;
-int buffer_val = 0;
-int *buffer_index = &buffer_val;
-pthread_mutex_t *buffer_mutex;
-pthread_cond_t *consumer_cond;
-pthread_cond_t *producer_cond;
-
-//Shared varibales that are initiated by the program inputs
-int NUMBER_OF_PRODUCERS;
-int NUMBER_OF_CONSUMERS;
-int TOTAL_NUMBER_OF_PRODUCTS;
-int SIZE_OF_QUEUE;
-int SCHEDULE_CHOICE;
-int VALUE_OF_QUANTUM;
-int RNG_SEED;
+*/
 
 int main(int argc, char** argv){
 	
@@ -80,16 +180,30 @@ int main(int argc, char** argv){
 	
 	srand(RNG_SEED); //Seeds the random number generator with the specified value
 	
-	//Creates a product array products which holds the products to be produced
-	//Populates them with values
-	struct Product products[TOTAL_NUMBER_OF_PRODUCTS];
-	for(i = 0; i < TOTAL_NUMBER_OF_PRODUCTS; ++i){
+	/* Code used to test the queue before we stated threading
+	struct Product_queue *the_queue = init_queue(SIZE_OF_QUEUE);
+	for(i = 0; i < 10; ++i){
 		
-		products[i].product_id = i;
-		products[i].birthday = clock();
-		products[i].life = rand() % 1024;
+		struct Product p;
+		p.product_id = i;
+		gettimeofday(&p.birthday, NULL);
+		p.life = rand() % 1024;
 		
+		print_product(p);
+		
+		queue_add(the_queue, p);
+		usleep(1000000);
 	}
+	
+	for(i = 0; i < 10; ++i){
+		struct Product p = queue_remove(the_queue);
+		print_product(p);
+	}
+	*/
+	
+	
+	
+	destroy_queue(the_queue);
 	
 	return 0;
 }
