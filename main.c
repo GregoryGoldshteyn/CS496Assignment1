@@ -8,7 +8,7 @@
 struct Product{
 	
 	int product_id;
-	clock_t brithday;
+	clock_t birthday;
 	int life;
 	
 };
@@ -19,7 +19,22 @@ void* producer(int *MAX){
 }
 
 //The consumer function, which will be executed by a pthread
-void* consumer()
+void* consumer(void *ptr){
+	
+	
+	
+}
+//Prints all products, used for debugging
+void print_all_products(struct Product prods[], int size){
+	
+	int i = 0;
+	for(i = 0; i < size; ++i){
+		printf("Product_id: %d\n", prods[i].product_id);
+		printf("Birthday: %d\n", prods[i].birthday);
+		printf("Life: %d\n\n", prods[i].life);
+	}
+	
+}
 
 //Shared variables required to control the producer/consumer threads
 struct Product **the_buffer;
@@ -32,7 +47,7 @@ pthread_cond_t *producer_cond;
 //Shared varibales that are initiated by the program inputs
 int NUMBER_OF_PRODUCERS;
 int NUMBER_OF_CONSUMERS;
-int TOTAL_NUMBER_OF_PRODUCERS;
+int TOTAL_NUMBER_OF_PRODUCTS;
 int SIZE_OF_QUEUE;
 int SCHEDULE_CHOICE;
 int VALUE_OF_QUANTUM;
@@ -52,16 +67,29 @@ int main(int argc, char** argv){
 	Conversion from string to int: int = atoi(string)
 	*/
 	
+	int i = 0; //A loop variable, used several times
+	
 	//Handles the arguemnts passed to the program
 	NUMBER_OF_PRODUCERS = atoi(argv[1]);
 	NUMBER_OF_CONSUMERS = atoi(argv[2]);
-	TOTAL_NUMBER_OF_PRODUCERS = atoi(argv[3]);
+	TOTAL_NUMBER_OF_PRODUCTS = atoi(argv[3]);
 	SIZE_OF_QUEUE = atoi(argv[4]);
 	SCHEDULE_CHOICE = atoi(argv[5]);
 	VALUE_OF_QUANTUM = atoi(argv[6]);
 	RNG_SEED = atoi(argv[7]);
 	
+	srand(RNG_SEED); //Seeds the random number generator with the specified value
 	
+	//Creates a product array products which holds the products to be produced
+	//Populates them with values
+	struct Product products[TOTAL_NUMBER_OF_PRODUCTS];
+	for(i = 0; i < TOTAL_NUMBER_OF_PRODUCTS; ++i){
+		
+		products[i].product_id = i;
+		products[i].birthday = clock();
+		products[i].life = rand() % 1024;
+		
+	}
 	
 	return 0;
 }
