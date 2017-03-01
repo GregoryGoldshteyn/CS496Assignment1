@@ -1,4 +1,5 @@
 #include <sys/time.h>
+#include <time.h>
 #include <stdio.h>
 #include <pthread.h> 
 #include <errno.h>
@@ -11,6 +12,9 @@ int total_number_produced = 0;
 int total_number_consumed = 0;
 pthread_mutex_t *producer_consumer_mutex;
 pthread_cond_t *consumer_cond, *producer_cond;
+struct Product_queue *the_queue;
+
+struct timespec timeToWait;
 
 //Shared varibales that are initiated by the program inputs
 int NUMBER_OF_PRODUCERS;
@@ -21,12 +25,22 @@ int SCHEDULE_CHOICE;
 int VALUE_OF_QUANTUM;
 int RNG_SEED;
 
+//Statistic varaibles for experimenting and getting data
+double max_turn_around = 0;
+double min_turn_around = -1;
+double avg_turn_around = 0;
+
+double min_wait = -1;
+double max_wait = 0;
+double avg_wait = 0;
+
 //A struct for representing products
 //clock_t is used for simplicity
 struct Product{
 	
 	int product_id;
 	struct timeval birthday;
+	struct timeval insert_time;
 	int life;
 	
 };
@@ -34,7 +48,7 @@ struct Product{
 void print_product(struct Product p){
 	
 	printf("The product id is %d\n", p.product_id);
-	printf("The product birthday is %lu\n", p.birthday.tv_usec);
+	printf("The product birthday is %lu\n", p.birthday.tv_usec/1000 + p.birthday.tv_sec * 1000);
 	printf("The product life is %d\n\n", p.life);
 	
 }
@@ -49,12 +63,13 @@ struct Product_queue{
 	int tail;
 	int is_empty;
 	int is_full;
+	int mode;
 	struct Product buffer[];
 	
 };
 
 //Function to initialize the queue
-struct Product_queue *init_queue(int size){
+struct Product_queue *init_queue(int size, int s_mode){
 	
 	int i = 0; //Loop variable
 	
@@ -76,6 +91,7 @@ struct Product_queue *init_queue(int size){
 	ret_q->is_full = 0;
 	ret_q->head = 0;
 	ret_q->tail = 0;
+	ret_q->mode = s_mode;
 	
 	return ret_q;
 	
@@ -111,9 +127,9 @@ void queue_add(struct Product_queue *q, struct Product in_p){
 }
 
 //Function to remove a product from the queue
-struct Product queue_remove(struct Product_queue *q){
+struct Product *queue_remove(struct Product_queue *q){
 	
-	struct Product ret_product = q->buffer[q->head];
+	struct Product *ret_product = &(q->buffer[q->head]);
 	q->head +=1;
 	if(q->head == q->buffer_size){
 		q->head = 0;
@@ -127,23 +143,26 @@ struct Product queue_remove(struct Product_queue *q){
 	
 }
 
-//The producer function, which will be executed by a pthread
-void* producer(void *q_ptr){
+//Function to peak at the next product in the queue
+struct Product *queue_peek(struct Product_queue *q){
 	
-	struct Product_queue *q = (struct Product_queue *)q_ptr;
+	return &(q->buffer[q->head]);
+	
+}
+
+//The producer function, which will be executed by a pthread
+void* producer(void *t_id){
+	
+	struct Product_queue *q = the_queue;
+	int id = *((int *)t_id);
 	
 	while(TOTAL_NUMBER_OF_PRODUCTS > total_number_produced){
 		
 		pthread_mutex_lock(q->q_mutex);//locks the mutex
 		
-		if(TOTAL_NUMBER_OF_PRODUCTS <= total_number_produced){
+		if(TOTAL_NUMBER_OF_PRODUCTS <= total_number_produced){//Makes sure that there are still products to produce
 			pthread_mutex_unlock(q->q_mutex);
 			return(NULL);
-		}
-		
-		//waits for the queue not to be full
-		while(q->is_full == 1){
-			pthread_cond_wait(q->is_not_full, q->q_mutex);
 		}
 		
 		//Creates a new product
@@ -151,17 +170,30 @@ void* producer(void *q_ptr){
 		p.product_id = total_number_produced;
 		gettimeofday(&p.birthday, NULL);
 		p.life = rand() % 1024;
-		
-		//Adds the product
-		queue_add(q, p);
 		total_number_produced += 1;
 		
-		printf("Producer %p has made a product\n", pthread_self());
+		//waits for the queue not to be full
+		while(q->is_full == 1){
+			pthread_cond_wait(q->is_not_full, q->q_mutex);
+		}
+		
+		//Adds the product
+		gettimeofday(&p.insert_time, NULL);
+		queue_add(q, p);
+		
+		printf("Producer %d has made a product\n", id);
 		print_product(p);
 		
 		//Unlocks the mutex, signals the queue is not empty
+		/*
+		printf("Value of full is %d\n", q->is_full);
+		printf("Empty is %d\n", q->is_empty);
+		printf("Number produced is %d\n", total_number_produced);
+		printf("Number consumed is %d\n", total_number_consumed);
+		*/
 		pthread_mutex_unlock(q->q_mutex);
 		pthread_cond_signal(q->is_not_empty);
+		
 		usleep(100000);//Sleep for 100 miliseconds
 		
 	}
@@ -170,34 +202,151 @@ void* producer(void *q_ptr){
 	
 }
 
+//The fibbonacci function for round robin scheduling
+int fn(int x){
+	
+	if(x <= 0){
+		return 0;
+	}
+	if(x == 1){
+		return 1;
+	}
+	return fn(x - 1) + fn(x - 2);
+	
+}
+
 //The consumer function, which will be executed by a pthread
-void* consumer(void *q_ptr){
+void* consumer(void *t_id){
 	
-	struct Product_queue *q = (struct Product_queue *)q_ptr;
+	struct Product_queue *q = the_queue;
+	struct timeval current_time;
+	double elapsed_time_wait = 0;
+	double elapsed_time_turn = 0;
+	int id = *((int *)t_id);
 	
-	while(TOTAL_NUMBER_OF_PRODUCTS > total_number_consumed){
-		
-		pthread_mutex_lock(q->q_mutex);//locks the mutex
-		
-		if(TOTAL_NUMBER_OF_PRODUCTS <= total_number_consumed){
+	if(q->mode == 0){
+		while(TOTAL_NUMBER_OF_PRODUCTS > total_number_consumed){
+			
+			pthread_mutex_lock(q->q_mutex);//locks the mutex
+			
+			//printf("Total number consumed%d\n", total_number_consumed);
+			
+			if(TOTAL_NUMBER_OF_PRODUCTS <= total_number_consumed){
+				pthread_mutex_unlock(q->q_mutex);
+				return(NULL);
+			}
+			
+			//Waits for the queue not to be empty
+			while(q->is_empty == 1){
+				pthread_cond_wait(q->is_not_empty, q->q_mutex);
+			}
+			gettimeofday(&current_time, NULL);
+			struct Product *p = queue_remove(q);
+			printf("Consumer %d has consumed a product\n", id);
+			print_product(*p);
+			gettimeofday(&current_time, NULL);
+			
+			elapsed_time_turn = (current_time.tv_sec - p->birthday.tv_sec) * 1000.0 + (current_time.tv_usec - p->birthday.tv_usec) / 1000.0;
+			elapsed_time_wait = (current_time.tv_sec - p->insert_time.tv_sec) * 1000.0 + (current_time.tv_usec - p->insert_time.tv_usec) / 1000.0;
+				
+			avg_turn_around += elapsed_time_turn;
+			avg_wait += elapsed_time_wait;
+			
+			if(elapsed_time_turn > max_turn_around){
+				max_turn_around = elapsed_time_turn;
+			}
+			if(min_turn_around < 0){
+				min_turn_around = elapsed_time_turn;
+			}
+			if(min_turn_around > elapsed_time_turn){
+				min_turn_around = elapsed_time_turn;
+			}
+			
+			if(elapsed_time_wait > max_wait){
+				max_wait = elapsed_time_wait;
+			}
+			if(min_wait < 0){
+				min_wait = elapsed_time_wait;
+			}
+			if(min_wait > elapsed_time_wait){
+				min_wait = elapsed_time_wait;
+			}
+			total_number_consumed += 1;
 			pthread_mutex_unlock(q->q_mutex);
-			return(NULL);
+			pthread_cond_signal(q->is_not_full); \
+			
+			usleep(100000);//Sleep for 100 miliseconds
 		}
-		
-		//Waits for the queue not to be empty
-		while(q->is_empty == 1){
-			pthread_cond_wait(q->is_not_empty, q->q_mutex);
+	}
+	else{
+		while(TOTAL_NUMBER_OF_PRODUCTS > total_number_consumed){
+			
+			pthread_mutex_lock(q->q_mutex);//locks the mutex
+			
+			if(TOTAL_NUMBER_OF_PRODUCTS <= total_number_consumed){
+				pthread_mutex_unlock(q->q_mutex);
+				return(NULL);
+			}
+			
+			//Waits for the queue not to be empty
+			while(q->is_empty == 1){
+				pthread_cond_wait(q->is_not_empty, q->q_mutex);
+			}
+			
+			struct Product *p = queue_peek(q);
+			int i = 0;
+			
+			if(p->life >= VALUE_OF_QUANTUM){
+				//printf("Consumer %d has found a life larger than quantum\n", id);
+				//printf("Life: %d, Q: %d\n", p->life, VALUE_OF_QUANTUM);
+				p->life -= VALUE_OF_QUANTUM;
+				for(i = 0; i < VALUE_OF_QUANTUM; ++i){
+					fn(10);
+				}
+				//printf("Consumer %d Done with the value of quantum\n", id);
+			}
+			else{
+				p = queue_remove(q);
+				
+				for(i = 0; i < p->life; ++i){
+					fn(10);
+				}
+				printf("Consumer %d has consumed a product\n", id);
+				print_product(*p);
+				gettimeofday(&current_time, NULL);
+			
+				elapsed_time_turn = (current_time.tv_sec - p->birthday.tv_sec) * 1000.0 + (current_time.tv_usec - p->birthday.tv_usec) / 1000.0;
+				elapsed_time_wait = (current_time.tv_sec - p->insert_time.tv_sec) * 1000.0 + (current_time.tv_usec - p->insert_time.tv_usec) / 1000.0;
+				
+				avg_turn_around += elapsed_time_turn;
+				avg_wait += elapsed_time_wait;
+				
+				if(elapsed_time_turn > max_turn_around){
+					max_turn_around = elapsed_time_turn;
+				}
+				if(min_turn_around < 0){
+					min_turn_around = elapsed_time_turn;
+				}
+				if(min_turn_around > elapsed_time_turn){
+					min_turn_around = elapsed_time_turn;
+				}
+				
+				if(elapsed_time_wait > max_wait){
+					max_wait = elapsed_time_wait;
+				}
+				if(min_wait < 0){
+					min_wait = elapsed_time_wait;
+				}
+				if(min_wait > elapsed_time_wait){
+					min_wait = elapsed_time_wait;
+				}
+				total_number_consumed += 1;
+			}
+			pthread_mutex_unlock(q->q_mutex);
+			pthread_cond_signal(q->is_not_full); \
+			
+			usleep(100000);//Sleep for 100 miliseconds
 		}
-		
-		struct Product p = queue_remove(q);
-		total_number_consumed += 1;
-		printf("Consumer %p has consumed a product\n", pthread_self());
-		print_product(p);
-		
-		pthread_mutex_unlock(q->q_mutex);
-		pthread_cond_signal(q->is_not_full); \
-		
-		usleep(100000);//Sleep for 100 miliseconds
 	}
 	
 	return (NULL);
@@ -232,6 +381,9 @@ int main(int argc, char** argv){
 	
 	Conversion from string to int: int = atoi(string)
 	*/
+	struct timeval start_time;
+	struct timeval end_time;
+	gettimeofday(&start_time, NULL);//start timing the program
 	
 	int i = 0; //A loop variable, used several times
 	
@@ -244,47 +396,87 @@ int main(int argc, char** argv){
 	VALUE_OF_QUANTUM = atoi(argv[6]);
 	RNG_SEED = atoi(argv[7]);
 	
+	printf("The number of producers is %d\n", NUMBER_OF_PRODUCERS);
+	printf("The number of consumers is %d\n", NUMBER_OF_CONSUMERS);
+	printf("The total number of products is %d\n", TOTAL_NUMBER_OF_PRODUCTS);
+	printf("The size of the queue is %d\n", SIZE_OF_QUEUE);
+	printf("The choice of schedule is %d\n", SCHEDULE_CHOICE);
+	printf("The value of quantum is %d\n", VALUE_OF_QUANTUM);
+	printf("The seed for RNG is %d\n\n", RNG_SEED);
+	
 	srand(RNG_SEED); //Seeds the random number generator with the specified value
-	struct Product_queue *the_queue = init_queue(SIZE_OF_QUEUE);//Initializes the queue
-	/* Code used to test the queue before we stated threading
-	struct Product_queue *the_queue = init_queue(SIZE_OF_QUEUE);
-	for(i = 0; i < 10; ++i){
-		
-		struct Product p;
-		p.product_id = i;
-		gettimeofday(&p.birthday, NULL);
-		p.life = rand() % 1024;
-		
-		print_product(p);
-		
-		queue_add(the_queue, p);
-		usleep(1000000);
-	}
-	
-	for(i = 0; i < 10; ++i){
-		struct Product p = queue_remove(the_queue);
-		print_product(p);
-	}
-	*/
-	
+	the_queue = init_queue(SIZE_OF_QUEUE, SCHEDULE_CHOICE);//Initializes the queue
+	//Creates and executes the pthreads
 	pthread_t producers[NUMBER_OF_PRODUCERS];
 	pthread_t consumers[NUMBER_OF_CONSUMERS];
 	
-	for(i = 0; i < NUMBER_OF_PRODUCERS; ++i){
-		pthread_create(&producers[i], NULL, producer, the_queue);
-	}
-	for(i = 0; i < NUMBER_OF_CONSUMERS; ++i){
-		pthread_create(&consumers[i], NULL, consumer, the_queue);
-	}
+	int ids[NUMBER_OF_CONSUMERS > NUMBER_OF_PRODUCERS ? NUMBER_OF_CONSUMERS : NUMBER_OF_PRODUCERS];
 	
 	for(i = 0; i < NUMBER_OF_PRODUCERS; ++i){
-		pthread_join(producers[i], NULL);
+		ids[i] = i;
+		pthread_create(&producers[i], NULL, producer, (void *)(ids + i));
 	}
 	for(i = 0; i < NUMBER_OF_CONSUMERS; ++i){
-		pthread_join(consumers[i], NULL);
+		ids[i] = i;
+		pthread_create(&consumers[i], NULL, consumer, (void *)(ids + i));
 	}
-	
+	//Joins the threads based on the number of one type of thread compared to another
+	//pthread_cancel is required here, because otherwise the threads wait for
+	//signals that never come
+	if(NUMBER_OF_PRODUCERS > NUMBER_OF_CONSUMERS){
+		
+		for(i = 0; i < NUMBER_OF_CONSUMERS; ++i){
+			pthread_join(consumers[i], NULL);
+			//printf("\t\tCONSUMER THREAD % JOINED\n", i);
+		}
+		for(i = 0; i < NUMBER_OF_PRODUCERS; ++i){
+			pthread_cancel(producers[i]);
+			//printf("\t\tPRODUCER THREAD % JOINED\n", i);
+		}
+		
+	}
+	else if(NUMBER_OF_PRODUCERS < NUMBER_OF_CONSUMERS){
+		for(i = 0; i < NUMBER_OF_PRODUCERS; ++i){
+			pthread_join(producers[i], NULL);
+			//printf("\t\tPRODUCER THREAD % JOINED\n", i);
+		}
+		while(total_number_consumed < TOTAL_NUMBER_OF_PRODUCTS){
+			sleep(1);
+		}
+		for(i = 0; i < NUMBER_OF_CONSUMERS; ++i){
+			pthread_cancel(consumers[i]);
+			//printf("\t\tCONSUMER THREAD % JOINED\n", i);
+		}
+	}
+	else{
+		for(i = 0; i < NUMBER_OF_PRODUCERS; ++i){
+			pthread_join(producers[i], NULL);
+			//printf("\t\tPRODUCER THREAD % JOINED\n", i);
+		}
+		for(i = 0; i < NUMBER_OF_CONSUMERS; ++i){
+			pthread_join(consumers[i], NULL);
+			//printf("\t\tCONSUMER THREAD % JOINED\n", i);
+		}
+	}
 	destroy_queue(the_queue);
+	
+	gettimeofday(&end_time, NULL);
+	
+	double time_consumed = (end_time.tv_sec - start_time.tv_sec) * 1000.0 + (end_time.tv_usec - start_time.tv_usec) / 1000.0;
+	
+	printf("Done with program. Entire process took %f ms\n", time_consumed);
+	avg_turn_around = avg_turn_around/TOTAL_NUMBER_OF_PRODUCTS;
+	avg_wait = avg_wait / TOTAL_NUMBER_OF_PRODUCTS;
+	printf("Min wait time is %f ms\n", min_wait);
+	printf("Max wait time is %f ms\n", max_wait);
+	printf("Avg wait time is %f ms\n", avg_wait);
+	
+	printf("Min turnaround time is %f ms\n", min_turn_around);
+	printf("Max turnaround time is %f ms\n", max_turn_around);
+	printf("Avg turnaround time is %f ms\n", avg_turn_around);
+	
+	//printf("Producer throughput is %f products per second\n", (double)TOTAL_NUMBER_OF_PRODUCTS / (time_consumed/60000.0));
+	//printf("Consumer throughput is %f products per second\n",);
 	
 	return 0;
 }
