@@ -34,6 +34,8 @@ double min_wait = -1;
 double max_wait = 0;
 double avg_wait = 0;
 
+int prod_con = 0;
+
 //A struct for representing products
 //clock_t is used for simplicity
 struct Product{
@@ -475,8 +477,8 @@ int main(int argc, char** argv){
 	printf("Max turnaround time is %f ms\n", max_turn_around);
 	printf("Avg turnaround time is %f ms\n", avg_turn_around);
 	
-	//printf("Producer throughput is %f products per second\n", (double)TOTAL_NUMBER_OF_PRODUCTS / (time_consumed/60000.0));
-	//printf("Consumer throughput is %f products per second\n",);
+	printf("Producer throughput is %f products per minute\n", (double)TOTAL_NUMBER_OF_PRODUCTS / (NUMBER_OF_PRODUCERS * time_consumed/60000.0));
+	printf("Consumer throughput is %f products per minute\n", (double)TOTAL_NUMBER_OF_PRODUCTS / (NUMBER_OF_CONSUMERS * time_consumed/60000.0));
 	
 	return 0;
 }
